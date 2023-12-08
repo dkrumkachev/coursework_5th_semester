@@ -1,80 +1,172 @@
 #include <Windows.h>
+#include <string>
 
 int shutdownType;
+UINT time;
+bool force;
+bool showMessage;
+UINT secondsForMessage = 30;
+
+
+DWORD SHUTDOWN_REASON = SHTDN_REASON_FLAG_PLANNED;
+LPCWSTR LOGOFF_MESSAGE = L"ƒо запланированного выхода из системы";
+LPCWSTR REBOOT_MESSAGE = L"ƒо запланированной перезагрузки";
+LPCWSTR SHUTDOWN_MESSAGE = L"ƒо запланированного завершени€ работы";
+const int MESSAGE_BUFFER_SIZE = 200;
+
+VOID ConstructMessage(LPCWSTR startMessage, LPWSTR* message)
+{
+    std::wstring str = std::wstring(startMessage).append(std::wstring(L" осталось "))
+        .append(std::to_wstring(secondsForMessage)).append(std::wstring(L" секунд."));
+    wcsncpy_s(*message, MESSAGE_BUFFER_SIZE, str.c_str(), str.length());
+}
+
+VOID StartLoggingOff()
+{
+    UINT flags = EWX_LOGOFF;
+    if (force)
+    {
+        flags |= EWX_FORCE;
+    }
+    if (showMessage)
+    {
+        LPWSTR message = new wchar_t[MESSAGE_BUFFER_SIZE];
+        ConstructMessage(LOGOFF_MESSAGE, &message);
+        InitiateSystemShutdownEx(NULL, message, secondsForMessage + 2, force, true, SHUTDOWN_REASON);
+        Sleep(secondsForMessage * 1000);
+        AbortSystemShutdown(NULL);
+    }
+    ExitWindowsEx(flags, SHUTDOWN_REASON);	
+}
+
+VOID StartShutdown()
+{
+    bool isReboot = shutdownType == 1;
+    UINT flags = isReboot ? EWX_REBOOT : EWX_POWEROFF;
+    if (force)
+    {
+        flags |= EWX_FORCE;
+    }
+    LPWSTR message = new wchar_t[MESSAGE_BUFFER_SIZE];
+    ConstructMessage(isReboot ? REBOOT_MESSAGE : SHUTDOWN_MESSAGE, &message);
+    InitiateSystemShutdownEx(NULL, message, secondsForMessage + 2, force, isReboot, SHUTDOWN_REASON);
+    Sleep(secondsForMessage * 1000);
+    AbortSystemShutdown(NULL);
+}
+
+VOID Shutdown(UINT flags, LPCWSTR msg)
+{
+    if (showMessage)
+    {
+        LPWSTR message = new wchar_t[MESSAGE_BUFFER_SIZE];
+        ConstructMessage(msg, &message);
+        InitiateSystemShutdownEx(NULL, message, secondsForMessage + 2, force, true, SHUTDOWN_REASON);
+        Sleep(secondsForMessage * 1000);
+        AbortSystemShutdown(NULL);
+    }
+    ExitWindowsEx(flags, SHUTDOWN_REASON);
+}
+
+VOID StartAction()
+{
+    UINT flags = 0U;
+    LPCWSTR message = NULL;
+    switch (shutdownType)
+    {
+    case 0:
+        flags = EWX_POWEROFF;
+        message = SHUTDOWN_MESSAGE;
+        break;
+    case 1:
+        flags = EWX_REBOOT;
+        message = REBOOT_MESSAGE;
+        break;
+    case 2:
+        flags = EWX_LOGOFF;
+        message = LOGOFF_MESSAGE;
+        break;
+    }
+    if (force)
+    {
+        flags |= EWX_FORCE;
+    }
+    Shutdown(flags, message);
+}
 
 VOID CALLBACK TimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 {
-	UINT flags = 0;
-	switch (shutdownType)
-	{
-	case 0:
-		flags = EWX_SHUTDOWN;
-		break;
-	case 1:
-		flags = EWX_REBOOT;
-		break;
-	default:
-		flags = EWX_LOGOFF;
-	}
-	int a;
-	if (ExitWindowsEx(flags /*| EWX_FORCE*/, SHTDN_REASON_FLAG_PLANNED) == 0)
-		a = GetLastError();
-	PostQuitMessage(0);
+    StartAction();
+    PostQuitMessage(0);
 }
 
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-	switch (uMsg) {
-	case WM_DESTROY:
-		PostQuitMessage(0);
-	}
-	return DefWindowProc(hWnd, uMsg, wParam, lParam);
+    switch (uMsg) {
+    case WM_DESTROY:
+        PostQuitMessage(0);
+    }
+    return DefWindowProc(hWnd, uMsg, wParam, lParam);
+}
+
+bool GetPrivileges()
+{
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tkp = {};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+    {
+        return false;
+    }
+    LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+    tkp.PrivilegeCount = 1;   
+    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+    return true;
 }
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
 {
-	WNDCLASSEX wcex;
-	MSG msg;
+    WNDCLASSEX wcex;
+    MSG msg;
 
-	memset(&wcex, 0, sizeof(wcex));
-	wcex.cbSize = sizeof(WNDCLASSEX);
-	wcex.lpfnWndProc = MainWindowProc;
-	wcex.hInstance = hInstance;
-	wcex.lpszClassName = L"MainWindowClassName";
-	RegisterClassEx(&wcex);
-	CreateWindow(L"MainWindowClassName", NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, 0);
-	
-	int argc;
-	LPWSTR* argv = CommandLineToArgvW(GetCommandLine(), &argc);
-	shutdownType = _wtoi(argv[1]);
-	int hours = _wtoi(argv[2]);
-	int minutes = _wtoi(argv[3]);
-	int seconds = _wtoi(argv[4]);
-	UINT time = ((hours * 60 + minutes) * 60 + seconds) * 1000;
-	UINT_PTR timerId = SetTimer(NULL, 0, time, TimerProc);
-	HANDLE hToken;
-	TOKEN_PRIVILEGES tkp;
+    memset(&wcex, 0, sizeof(wcex));
+    wcex.cbSize = sizeof(WNDCLASSEX);
+    wcex.lpfnWndProc = MainWindowProc;
+    wcex.hInstance = hInstance;
+    wcex.lpszClassName = L"MainWindowClassName";
+    RegisterClassEx(&wcex);
+    CreateWindow(L"MainWindowClassName", NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, 0);
+    
+    int argc;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLine(), &argc);
+    shutdownType = _wtoi(argv[1]);
+    time = wcstoul(argv[2], NULL, 10);
+    force = _wtoi(argv[3]) != 0;
+    showMessage = _wtoi(argv[4]) != 0;
 
-	// Get a token for this process. 
-	if (!OpenProcessToken(GetCurrentProcess(),
-		TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
-		return(FALSE);
+    GetPrivileges();
 
-	// Get the LUID for the shutdown privilege. 
-	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME,
-		&tkp.Privileges[0].Luid);
+    const unsigned int defaultMessageTime = 30;
+    if (showMessage)
+    {
+        secondsForMessage = time < defaultMessageTime ? time : defaultMessageTime;
+    }
+    else
+    {
+        secondsForMessage = 0;
+    }
+    if (time > secondsForMessage)
+    {
+        UINT_PTR timerId = SetTimer(NULL, 0, (time - secondsForMessage) * 1000, TimerProc);
+    }
+    else 
+    {
+        StartAction();
+    }
 
-	tkp.PrivilegeCount = 1;  // one privilege to set    
-	tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-	// Get the shutdown privilege for this process. 
-	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0,
-		(PTOKEN_PRIVILEGES)NULL, 0);
-
-	while (GetMessage(&msg, 0, 0, 0))
-	{
-		DispatchMessage(&msg);
-	}
-	return (int)msg.wParam;
+    while (GetMessage(&msg, 0, 0, 0))
+    {
+        DispatchMessage(&msg);
+    }
+    return (int)msg.wParam;
 }
 
